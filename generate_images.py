@@ -3,145 +3,123 @@
 import asyncio
 import os
 import re
-import html
-from pathlib import Path
-from typing import Optional, Set
 
 import aiohttp
+
 from github_stats import Stats
 
-# Constants
-OUT_DIR = Path("generated")
-TEMPLATE_DIR = Path("templates")
 
 ################################################################################
 # Helper Functions
 ################################################################################
 
-def str_to_bool(value: Optional[str]) -> bool:
-    """Helper to cleanly parse boolean env vars."""
-    if not value:
-        return False
-    return value.strip().lower() in ("true", "1", "yes", "on")
 
-def safe_sub(pattern: str, replacement: str, string: str) -> str:
+def generate_output_folder() -> None:
     """
-    Safely substitutes a regex pattern with an escaped replacement 
-    to prevent SVG breakage or injection.
+    Create the output folder if it does not already exist
     """
-    # Escape XML/HTML special characters in the replacement string
-    safe_replacement = html.escape(str(replacement))
-    return re.sub(pattern, safe_replacement, string)
+    if not os.path.isdir("generated"):
+        os.mkdir("generated")
+
 
 ################################################################################
 # Individual Image Generation Functions
 ################################################################################
 
+
 async def generate_overview(s: Stats) -> None:
     """
     Generate an SVG badge with summary statistics
+    :param s: Represents user's GitHub statistics
     """
-    template_path = TEMPLATE_DIR / "overview.svg"
-    if not template_path.exists():
-        raise FileNotFoundError(f"Template not found: {template_path}")
-
-    with open(template_path, "r", encoding="utf-8") as f:
+    with open("templates/overview.svg", "r") as f:
         output = f.read()
 
-    # Calculate stats concurrently where possible or await sequentially
-    lines_changed_data = await s.lines_changed
-    total_lines = lines_changed_data[0] + lines_changed_data[1]
-    
-    # Use safe substitution
-    output = safe_sub("{{ name }}", await s.name, output)
-    output = safe_sub("{{ stars }}", f"{await s.stargazers:,}", output)
-    output = safe_sub("{{ forks }}", f"{await s.forks:,}", output)
-    output = safe_sub("{{ contributions }}", f"{await s.total_contributions:,}", output)
-    output = safe_sub("{{ lines_changed }}", f"{total_lines:,}", output)
-    output = safe_sub("{{ views }}", f"{await s.views:,}", output)
-    output = safe_sub("{{ repos }}", f"{len(await s.repos):,}", output)
+    output = re.sub("{{ name }}", await s.name, output)
+    output = re.sub("{{ stars }}", f"{await s.stargazers:,}", output)
+    output = re.sub("{{ forks }}", f"{await s.forks:,}", output)
+    output = re.sub("{{ contributions }}", f"{await s.total_contributions:,}", output)
+    changed = (await s.lines_changed)[0] + (await s.lines_changed)[1]
+    output = re.sub("{{ lines_changed }}", f"{changed:,}", output)
+    output = re.sub("{{ views }}", f"{await s.views:,}", output)
+    output = re.sub("{{ repos }}", f"{len(await s.repos):,}", output)
 
-    OUT_DIR.mkdir(exist_ok=True)
-    with open(OUT_DIR / "overview.svg", "w", encoding="utf-8") as f:
+    generate_output_folder()
+    with open("generated/overview.svg", "w") as f:
         f.write(output)
 
 
 async def generate_languages(s: Stats) -> None:
     """
     Generate an SVG badge with summary languages used
+    :param s: Represents user's GitHub statistics
     """
-    template_path = TEMPLATE_DIR / "languages.svg"
-    if not template_path.exists():
-        raise FileNotFoundError(f"Template not found: {template_path}")
-
-    with open(template_path, "r", encoding="utf-8") as f:
+    with open("templates/languages.svg", "r") as f:
         output = f.read()
 
     progress = ""
     lang_list = ""
-    
-    # Fetch languages once
-    langs_data = await s.languages
     sorted_languages = sorted(
-        langs_data.items(), reverse=True, key=lambda t: t[1].get("size", 0)
+        (await s.languages).items(), reverse=True, key=lambda t: t[1].get("size")
     )
-    
     delay_between = 150
     for i, (lang, data) in enumerate(sorted_languages):
-        color = data.get("color", "#000000")
-        prop = data.get("prop", 0)
-        
+        color = data.get("color")
+        color = color if color is not None else "#000000"
         progress += (
             f'<span style="background-color: {color};'
-            f'width: {prop:0.3f}%;" '
+            f'width: {data.get("prop", 0):0.3f}%;" '
             f'class="progress-item"></span>'
         )
-        
-        # HTML structure for the list
         lang_list += f"""
-        <li style="animation-delay: {i * delay_between}ms;">
-        <svg xmlns="http://www.w3.org/2000/svg" class="octicon" style="fill:{color};"
-        viewBox="0 0 16 16" version="1.1" width="16" height="16"><path
-        fill-rule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8z"></path></svg>
-        <span class="lang">{html.escape(lang)}</span>
-        <span class="percent">{prop:0.2f}%</span>
-        </li>
-        """
+<li style="animation-delay: {i * delay_between}ms;">
+<svg xmlns="http://www.w3.org/2000/svg" class="octicon" style="fill:{color};"
+viewBox="0 0 16 16" version="1.1" width="16" height="16"><path
+fill-rule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8z"></path></svg>
+<span class="lang">{lang}</span>
+<span class="percent">{data.get("prop", 0):0.2f}%</span>
+</li>
 
-    output = re.sub(r"{{ progress }}", progress, output) # Internal HTML, already escaped/safe
-    output = re.sub(r"{{ lang_list }}", lang_list, output) # Internal HTML, already escaped/safe
+"""
 
-    OUT_DIR.mkdir(exist_ok=True)
-    with open(OUT_DIR / "languages.svg", "w", encoding="utf-8") as f:
+    output = re.sub(r"{{ progress }}", progress, output)
+    output = re.sub(r"{{ lang_list }}", lang_list, output)
+
+    generate_output_folder()
+    with open("generated/languages.svg", "w") as f:
         f.write(output)
+
 
 ################################################################################
 # Main Function
 ################################################################################
 
+
 async def main() -> None:
+    """
+    Generate all badges
+    """
     access_token = os.getenv("ACCESS_TOKEN")
     if not access_token:
-        raise ValueError("Environment variable ACCESS_TOKEN is required.")
-        
+        # access_token = os.getenv("GITHUB_TOKEN")
+        raise Exception("A personal access token is required to proceed!")
     user = os.getenv("GITHUB_ACTOR")
-    if not user:
-        raise ValueError("Environment variable GITHUB_ACTOR is required.")
-
-    # Parsing lists
-    exclude_repos_env = os.getenv("EXCLUDED")
-    excluded_repos: Optional[Set[str]] = (
-        {x.strip() for x in exclude_repos_env.split(",")} if exclude_repos_env else None
+    if user is None:
+        raise RuntimeError("Environment variable GITHUB_ACTOR must be set.")
+    exclude_repos = os.getenv("EXCLUDED")
+    excluded_repos = (
+        {x.strip() for x in exclude_repos.split(",")} if exclude_repos else None
     )
-
-    exclude_langs_env = os.getenv("EXCLUDED_LANGS")
-    excluded_langs: Optional[Set[str]] = (
-        {x.strip() for x in exclude_langs_env.split(",")} if exclude_langs_env else None
+    exclude_langs = os.getenv("EXCLUDED_LANGS")
+    excluded_langs = (
+        {x.strip() for x in exclude_langs.split(",")} if exclude_langs else None
     )
-
-    # Clean boolean parsing
-    ignore_forked_repos = str_to_bool(os.getenv("EXCLUDE_FORKED_REPOS"))
-
+    # Convert a truthy value to a Boolean
+    raw_ignore_forked_repos = os.getenv("EXCLUDE_FORKED_REPOS")
+    ignore_forked_repos = (
+        not not raw_ignore_forked_repos
+        and raw_ignore_forked_repos.strip().lower() != "false"
+    )
     async with aiohttp.ClientSession() as session:
         s = Stats(
             user,
@@ -151,14 +129,8 @@ async def main() -> None:
             exclude_langs=excluded_langs,
             ignore_forked_repos=ignore_forked_repos,
         )
-        
-        print(f"Generating stats for {user}...")
-        try:
-            await asyncio.gather(generate_languages(s), generate_overview(s))
-            print("Generation complete.")
-        except Exception as e:
-            print(f"Error during generation: {e}")
-            raise
+        await asyncio.gather(generate_languages(s), generate_overview(s))
+
 
 if __name__ == "__main__":
     asyncio.run(main())

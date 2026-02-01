@@ -116,7 +116,7 @@ class Queries(object):
         print("There were too many 202s. Data for this repository will be incomplete.")
         return dict()
 
-  @staticmethod
+    @staticmethod
     def repos_overview(
         contrib_cursor: Optional[str] = None, owned_cursor: Optional[str] = None
     ) -> str:
